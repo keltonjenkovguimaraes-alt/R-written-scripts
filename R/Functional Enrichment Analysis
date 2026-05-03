@@ -1,0 +1,293 @@
+# ============================================
+# Assignment 3: Functional Enrichment Analysis
+# Goal: Understand biological meaning of DE genes
+# ============================================
+
+# Load libraries
+library(DESeq2)
+library(airway)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(EnsDb.Hsapiens.v86)  # MOVED UP - needed before use
+library(ggplot2)
+library(dplyr)
+library(enrichplot)
+library(pheatmap)  # ADDED for heatmaps
+library(ggpubr)    # ADDED for stat_compare_means
+
+# Load your data and run DE analysis (from your own data)
+data(airway)                                                    #This is an exxample, load your data here
+dds <- DESeqDataSet(airway, design = ~ cell + dex)
+dds <- DESeq(dds)
+res <- results(dds, contrast = c("dex", "trt", "untrt"))
+
+# ============================================
+# Step 1: Get significant genes
+# ============================================
+
+# Filter significant genes (padj < 0.05, |log2FC| > 1)
+sig_genes <- res[!is.na(res$padj) & 
+                   res$padj < 0.05 & 
+                   abs(res$log2FoldChange) > 1, ]
+
+# Separate up and down regulated
+up_genes <- rownames(sig_genes[sig_genes$log2FoldChange > 0, ])
+down_genes <- rownames(sig_genes[sig_genes$log2FoldChange < 0, ])
+
+print(paste("Upregulated genes:", length(up_genes)))
+print(paste("Downregulated genes:", length(down_genes)))
+print(paste("Total significant:", length(up_genes) + length(down_genes)))
+
+# ============================================
+# Step 2: Convert gene IDs (ENSEMBL to ENTREZ)                              In here, you can face some challenges regarding genes ID's, if you do, the ID' must be filtered out.
+# ============================================
+
+# Remove version numbers for mapping
+clean_ids <- gsub("\\..*$", "", rownames(sig_genes))
+
+# Convert all significant genes
+entrez_all <- mapIds(EnsDb.Hsapiens.v86,
+                     keys = clean_ids,
+                     column = "ENTREZID",
+                     keytype = "GENEID",
+                     multiVals = "first")
+
+# Remove NA values
+entrez_all <- na.omit(entrez_all)
+print(paste("Successfully converted", length(entrez_all), "genes to ENTREZ IDs"))
+
+# Convert up and down separately
+entrez_up <- mapIds(EnsDb.Hsapiens.v86,
+                    keys = gsub("\\..*$", "", up_genes),
+                    column = "ENTREZID",
+                    keytype = "GENEID",
+                    multiVals = "first")
+entrez_up <- na.omit(entrez_up)
+
+entrez_down <- mapIds(EnsDb.Hsapiens.v86,
+                      keys = gsub("\\..*$", "", down_genes),
+                      column = "ENTREZID",
+                      keytype = "GENEID",
+                      multiVals = "first")
+entrez_down <- na.omit(entrez_down)
+
+# ============================================
+# Step 3: Identify Non-coding Genes
+# ============================================
+
+# Get unmapped genes (non-coding candidates)
+mapped_genes <- names(entrez_all[!is.na(entrez_all)])
+unmapped_genes <- setdiff(clean_ids, mapped_genes)
+print(paste("Total unmapped genes:", length(unmapped_genes)))
+
+# Get gene biotypes for unmapped genes
+gene_info <- select(EnsDb.Hsapiens.v86,
+                    keys = unmapped_genes,
+                    columns = c("GENEID", "GENENAME", "GENEBIOTYPE"),
+                    keytype = "GENEID")
+
+# Define non-coding biotypes
+non_coding_ensembl <- gene_info$GENEID[gene_info$GENEBIOTYPE != "protein_coding"]
+print(paste("Non-coding genes identified:", length(non_coding_ensembl)))
+
+# Visualize biotype distribution
+biotype_counts <- as.data.frame(table(gene_info$GENEBIOTYPE))
+colnames(biotype_counts) <- c("Biotype", "Count")
+
+ggplot(biotype_counts, aes(x = reorder(Biotype, -Count), y = Count)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Biotypes of Unmapped Genes",
+       x = "Gene Biotype",
+       y = "Count")
+
+# ============================================
+# Step 4: GO Enrichment Analysis
+# ============================================
+
+# Biological Process
+go_bp <- enrichGO(gene = entrez_all,
+                  OrgDb = org.Hs.eg.db,
+                  ont = "BP",
+                  pAdjustMethod = "BH",
+                  pvalueCutoff = 0.05,
+                  qvalueCutoff = 0.05,
+                  readable = TRUE)
+
+# Cellular Component
+go_cc <- enrichGO(gene = entrez_all,
+                  OrgDb = org.Hs.eg.db,
+                  ont = "CC",
+                  pAdjustMethod = "BH",
+                  pvalueCutoff = 0.05,
+                  readable = TRUE)
+
+# Molecular Function
+go_mf <- enrichGO(gene = entrez_all,
+                  OrgDb = org.Hs.eg.db,
+                  ont = "MF",
+                  pAdjustMethod = "BH",
+                  pvalueCutoff = 0.05,
+                  readable = TRUE)
+
+# Check results
+print("GO Biological Process results:")
+if(exists("go_bp") && nrow(go_bp) > 0) {
+  print(head(go_bp, 10))
+} else {
+  print("No significant GO terms found")
+}
+
+# ============================================
+# Step 5: Visualize GO Enrichment (FIXED)
+# ============================================
+
+if(exists("go_bp") && nrow(go_bp) > 0) {
+  # 5A: Dot plot
+  p1 <- dotplot(go_bp, showCategory = 15, title = "GO Biological Process")
+  print(p1)
+  
+  # 5B: Bar plot
+  p2 <- barplot(go_bp, showCategory = 15, title = "Top GO Terms")
+  print(p2)
+  
+  # 5C: Gene-Concept Network - FIXED (use simpler syntax)
+  p3 <- cnetplot(go_bp, showCategory = 10)
+  print(p3)
+  
+  # 5D: Enrichment Map with pairwise termsim - FIXED
+  go_bp_sim <- pairwise_termsim(go_bp)
+  p4 <- emapplot(go_bp_sim, showCategory = 20)
+  print(p4)
+}
+
+# ============================================
+# Step 6: KEGG Pathway Analysis
+# ============================================
+
+kegg_results <- enrichKEGG(gene = entrez_all,
+                           organism = "hsa",
+                           pvalueCutoff = 0.05,
+                           pAdjustMethod = "BH")
+
+if(exists("kegg_results") && nrow(kegg_results) > 0) {
+  print("Significant KEGG pathways:")
+  print(head(kegg_results, 10))
+  
+  p5 <- dotplot(kegg_results, showCategory = 15, title = "KEGG Pathways")
+  print(p5)
+} else {
+  print("No significant KEGG pathways found")
+}
+
+# ============================================
+# Step 7: GSEA (FIXED - with duplicate resolution)
+# ============================================
+
+# Create ranked gene list
+gene_list <- res$log2FoldChange
+names(gene_list) <- rownames(res)
+gene_list <- sort(gene_list, decreasing = TRUE)
+gene_list <- gene_list[!is.na(gene_list)]
+
+# Convert to ENTREZ IDs and handle duplicates
+all_genes_clean <- gsub("\\..*$", "", names(gene_list))
+entrez_map <- mapIds(org.Hs.eg.db,
+                     keys = all_genes_clean,
+                     column = "ENTREZID",
+                     keytype = "ENSEMBL",
+                     multiVals = "first")
+
+# Create data frame and resolve duplicates (keep highest |log2FC|)
+gene_df <- data.frame(
+  ensembl = names(gene_list),
+  log2FC = as.numeric(gene_list),
+  entrez = entrez_map
+)
+gene_df <- gene_df[!is.na(gene_df$entrez), ]
+gene_df <- gene_df[order(abs(gene_df$log2FC), decreasing = TRUE), ]
+gene_df <- gene_df[!duplicated(gene_df$entrez), ]
+
+gene_list_entrez <- gene_df$log2FC
+names(gene_list_entrez) <- gene_df$entrez
+gene_list_entrez <- sort(gene_list_entrez, decreasing = TRUE)
+
+# Run GSEA
+gsea_results <- gseGO(geneList = gene_list_entrez,
+                      OrgDb = org.Hs.eg.db,
+                      ont = "BP",
+                      keyType = "ENTREZID",
+                      minGSSize = 10,
+                      maxGSSize = 500,
+                      pvalueCutoff = 0.05,
+                      eps = 0,
+                      verbose = TRUE)
+
+if(exists("gsea_results") && nrow(gsea_results) > 0) {
+  print("Top GSEA results:")
+  print(head(gsea_results, 10))
+  
+  p7 <- ridgeplot(gsea_results[1:10, ])
+  print(p7)
+}
+
+# ============================================
+# Step 8: Coding vs Non-coding Comparison
+# ============================================
+
+# Prepare data frame
+all_genes_df <- data.frame(
+  ENSEMBL = rownames(res),
+  log2FC = res$log2FoldChange,
+  padj = res$padj,
+  is_sig = !is.na(res$padj) & res$padj < 0.05 & abs(res$log2FoldChange) > 1
+)
+
+# Classify genes
+all_genes_df$type <- "Coding"
+all_genes_df$type[all_genes_df$ENSEMBL %in% non_coding_ensembl] <- "Non-coding"
+
+# Volcano plot (Coding vs Non-coding)
+ggplot(all_genes_df, aes(x = log2FC, y = -log10(padj), color = type)) +
+  geom_point(alpha = 0.6, size = 1) +
+  scale_color_manual(values = c("Coding" = "gray", "Non-coding" = "blue")) +
+  theme_minimal() +
+  labs(title = "Coding vs Non-coding Genes: Differential Expression",
+       x = "log2 Fold Change",
+       y = "-log10(adjusted p-value)") +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", alpha = 0.5) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", alpha = 0.5)
+
+# Boxplot comparison
+if(sum(all_genes_df$is_sig) > 0) {
+  ggplot(all_genes_df[all_genes_df$is_sig, ], aes(x = type, y = log2FC, fill = type)) +
+    geom_boxplot() +
+    geom_jitter(alpha = 0.3, size = 0.5) +
+    theme_minimal() +
+    labs(title = "Comparison of Effect Sizes: Coding vs Non-coding",
+         x = "Gene Type",
+         y = "log2 Fold Change") +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    scale_fill_manual(values = c("Coding" = "lightcoral", "Non-coding" = "lightblue")) +
+    stat_compare_means(method = "wilcox.test", label = "p.signif")
+}
+
+# ============================================
+# Step 9: Save Results
+# ============================================
+
+dir.create("Enrichment_Results", showWarnings = FALSE)
+
+if(exists("go_bp") && nrow(go_bp) > 0) write.csv(as.data.frame(go_bp), "Enrichment_Results/GO_BP_results.csv")
+if(exists("go_cc") && nrow(go_cc) > 0) write.csv(as.data.frame(go_cc), "Enrichment_Results/GO_CC_results.csv")
+if(exists("go_mf") && nrow(go_mf) > 0) write.csv(as.data.frame(go_mf), "Enrichment_Results/GO_MF_results.csv")
+if(exists("kegg_results") && nrow(kegg_results) > 0) write.csv(as.data.frame(kegg_results), "Enrichment_Results/KEGG_results.csv")
+if(exists("gsea_results") && nrow(gsea_results) > 0) write.csv(as.data.frame(gsea_results), "Enrichment_Results/GSEA_results.csv")
+
+# Save session info
+sink("Enrichment_Results/session_info.txt")
+sessionInfo()
+sink()
+
+print("All enrichment results saved to 'Enrichment_Results' folder")
