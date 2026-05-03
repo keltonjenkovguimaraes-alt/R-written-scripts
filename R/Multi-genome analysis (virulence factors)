@@ -1,0 +1,315 @@
+                       # Virulence Factor Analysis for Fungal Genomes - GTF/GFF Version
+                            # Load required libraries
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(purrr)
+library(readr)
+library(data.table)
+library(tidyr)
+
+search()
+
+                            # Set working directory to folder containing all genome files
+setwd("")
+
+                            # Get list of all .gtf and .gff files
+gtf_files <- list.files(pattern = "\\.gtf$", full.names = TRUE)
+gff_files <- list.files(pattern = "\\.gff$", full.names = TRUE)
+gff_files <- c(gff_files, list.files(pattern = "\\.gff3$", full.names = TRUE))
+
+cat("Found", length(gtf_files), "GTF files\n")
+cat("Found", length(gff_files), "GFF files\n")
+
+                            # Function to inspect file structure
+inspect_file <- function(file_path) {
+  cat("\n=== Inspecting:", basename(file_path), "===\n")
+  
+  if (!file.exists(file_path)) {
+    cat("File not found!\n")
+    return(NULL)
+  }
+  
+                            # Read first lines
+  lines <- readLines(file_path, n = 15)
+  cat("First 10 lines:\n")
+  for (i in 1:min(10, length(lines))) {
+    cat(i, ":", lines[i], "\n")
+  }
+  return(lines)
+}
+
+                            # Inspect first files of each type
+if (length(gtf_files) > 0) inspect_file(gtf_files[1])
+if (length(gff_files) > 0) inspect_file(gff_files[1])
+
+                            # Universal parser for GTF/GFF files
+parse_genome_file <- function(file_path) {
+  cat("Processing:", basename(file_path), "\n")
+  
+  tryCatch({
+                            # Read the file, skipping comment lines
+    file_ext <- tools::file_ext(file_path)
+    genome_name <- tools::file_path_sans_ext(basename(file_path))
+    
+                            # Read data - GTF and GFF are tab-separated
+    data <- read.table(file_path, sep = "\t", header = FALSE, 
+                       stringsAsFactors = FALSE, comment.char = "#",
+                       quote = "", fill = TRUE, na.strings = ".",
+                       col.names = c("seqid", "source", "type", "start", "end", 
+                                     "score", "strand", "phase", "attributes"))
+    
+    cat("Raw dimensions:", dim(data), "\n")
+    
+                            # Add genome name and file type
+    data$genome <- genome_name
+    data$file_type <- file_ext
+    
+                            # Parse attributes column (this works for both GTF and GFF)
+    data <- data %>%
+      mutate(
+                            # Extract common attributes
+        gene_id = str_extract(attributes, "gene_id[= ]\"?([^;\"]+)\"?"),
+        gene_name = str_extract(attributes, "gene_name[= ]\"?([^;\"]+)\"?"),
+        product = str_extract(attributes, "product[= ]\"?([^;\"]+)\"?"),
+        description = str_extract(attributes, "description[= ]\"?([^;\"]+)\"?"),
+        name = str_extract(attributes, "Name[= ]\"?([^;\"]+)\"?"),
+        note = str_extract(attributes, "Note[= ]\"?([^;\"]+)\"?"),
+        # For GFF files
+        id = str_extract(attributes, "ID[= ]\"?([^;\"]+)\"?"),
+        
+                            # Clean up the extracted fields
+        gene_id = coalesce(
+          str_remove_all(gene_id, 'gene_id[= ]"?|"|;$'),
+          str_remove_all(id, 'ID[= ]"?|"|;$')
+        ),
+        product = coalesce(
+          str_remove_all(product, 'product[= ]"?|"|;$'),
+          str_remove_all(description, 'description[= ]"?|"|;$'),
+          str_remove_all(note, 'Note[= ]"?|"|;$')
+        ),
+        gene_name = coalesce(
+          str_remove_all(gene_name, 'gene_name[= ]"?|"|;$'),
+          str_remove_all(name, 'Name[= ]"?|"|;$'),
+          gene_id  # Fall back to gene_id if no gene_name
+        )
+      )
+    
+    cat("Successfully processed", nrow(data), "features from", basename(file_path), "\n")
+    return(data)
+    
+  }, error = function(e) {
+    cat("ERROR processing", basename(file_path), ":", e$message, "\n")
+    return(NULL)
+  })
+}
+
+                              # Process all genome files
+process_all_genomes <- function() {
+  all_files <- c(gtf_files, gff_files)
+  
+  if (length(all_files) == 0) {
+    cat("No GTF or GFF files found!\n")
+    return(NULL)
+  }
+  
+  cat("\n=== PROCESSING", length(all_files), "FILES ===\n")
+  
+  all_data <- map_dfr(all_files, parse_genome_file)
+  
+  if (!is.null(all_data) && nrow(all_data) > 0) {
+    cat("\n=== PROCESSING COMPLETE ===\n")
+    cat("Total features:", nrow(all_data), "\n")
+    cat("Genomes:", unique(all_data$genome), "\n")
+    cat("File types:", unique(all_data$file_type), "\n")
+    cat("Feature types:", unique(all_data$type), "\n")
+  } else {
+    cat("\n=== NO DATA PROCESSED ===\n")
+  }
+  
+  return(all_data)
+}
+
+                                # Run the processing
+genome_data <- process_all_genomes()
+
+                                # Check what we got
+if (!is.null(genome_data) && nrow(genome_data) > 0) {
+  cat("\n=== DATA SUMMARY ===\n")
+  print(head(genome_data))
+  cat("\nColumn names:", colnames(genome_data), "\n")
+  
+                                # Show available gene information
+  cat("\nGene ID sample:", head(na.omit(genome_data$gene_id)), "\n")
+  cat("Product sample:", head(na.omit(genome_data$product)), "\n")
+  cat("Gene name sample:", head(na.omit(genome_data$gene_name)), "\n")
+  
+                                # Focus on gene features (most relevant for virulence factors)
+  gene_data <- genome_data %>% 
+    filter(type %in% c("gene", "mRNA", "CDS", "exon"))
+  
+  cat("\nGene-related features:", nrow(gene_data), "\n")
+  
+} else {
+  cat("No data available for analysis\n")
+  quit()
+}
+
+                                # Enhanced virulence factor identification for fungi
+identify_virulence_factors <- function(gene_data) {
+                                # Comprehensive list of fungal virulence factors
+  virulence_keywords <- c(
+                                # Proteases and hydrolases
+    "protease", "peptidase", "aspartyl protease", "subtilisin", "serine protease",
+    "lipase", "phospholipase", "lysophospholipase", "hydrolase", "esterase",
+    "ribonuclease", "deoxyribonuclease", "nuclease",
+    
+                                # Cell wall/membrane related
+    "chitinase", "chitin synthase", "glucanase", "melanin", "laccase",
+    "capsule", "cell.wall", "mannoprotein", "glycoprotein", "glycosyl",
+    "beta.glucosidase", "glucan.synthase",
+    
+                                # Toxins and effectors
+    "toxin", "effector", "candidalysin", "gliotoxin", "aflatoxin",
+    "mycotoxin", "fumonisin", "trichothecene", "zearalenone", "ochratoxin",
+    "hemolysin", "hemolytic", "cytolysin",
+    
+                                # Adhesion and biofilm
+    "adhesin", "biofilm", "aggregation", "attachment", "binding",
+    "surface protein", "anchored", "flocculation", "hypha", "hyphal",
+    
+                                # Stress response
+    "catalase", "superoxide", "dismutase", "peroxidase", "peroxiredoxin",
+    "oxidative", "stress", "heat.shock", "chaperone", "thioredoxin",
+    "glutathione", "redox",
+    
+                                # Secretion and invasion
+    "secreted", "extracellular", "invasion", "penetration",
+    "lytic enzyme", "degrading enzyme", "hydrolytic enzyme",
+    
+                                # Metabolic virulence factors
+    "siderophore", "iron acquisition", "nutrient acquisition", "iron transport",
+    "phytase", "cellulase", "amylase", "invertase", "sucrase",
+    
+                                # Signaling and regulation
+    "calmodulin", "calcineurin", "kinase", "phosphatase", "G.protein",
+    "cAMP", "MAPK", "transcription factor",
+    
+                                # General terms
+    "virulence", "pathogenicity", "pathogenesis", "infection",
+    "fungal virulence", "mycosis", "disease", "colonization"
+  )
+  
+                                # Create search text from all available annotation columns
+  search_data <- gene_data %>%
+    mutate(
+      search_text = paste(
+        coalesce(product, ""),
+        coalesce(description, ""),
+        coalesce(gene_name, ""),
+        coalesce(note, ""),
+        coalesce(attributes, ""),
+        sep = " | "
+      ),
+      search_text = tolower(search_text)
+    )
+  
+                                # Convert keywords to regex pattern
+  virulence_pattern <- paste(virulence_keywords, collapse = "|")
+  
+                                # Identify virulence factors
+  virulence_hits <- search_data %>%
+    mutate(
+      is_virulence = str_detect(search_text, regex(virulence_pattern, ignore_case = TRUE))
+    ) %>%
+    filter(is_virulence) %>%
+    mutate(
+      virulence_category = case_when(
+        str_detect(search_text, regex("protease|peptidase|lipase|phospholipase|hydrolase", ignore_case = TRUE)) ~ "Hydrolases",
+        str_detect(search_text, regex("toxin|effector|hemolysin", ignore_case = TRUE)) ~ "Toxins/Effectors",
+        str_detect(search_text, regex("adhesin|biofilm|attachment|hypha", ignore_case = TRUE)) ~ "Adhesion/Biofilm",
+        str_detect(search_text, regex("melanin|capsule|cell.wall|chitin", ignore_case = TRUE)) ~ "Cell Wall Components",
+        str_detect(search_text, regex("catalase|superoxide|dismutase|oxidative|stress", ignore_case = TRUE)) ~ "Stress Response",
+        str_detect(search_text, regex("secreted|extracellular", ignore_case = TRUE)) ~ "Secreted Factors",
+        str_detect(search_text, regex("siderophore|iron", ignore_case = TRUE)) ~ "Nutrient Acquisition",
+        str_detect(search_text, regex("kinase|phosphatase|calcium|signaling", ignore_case = TRUE)) ~ "Signaling",
+        TRUE ~ "Other Virulence Factors"
+      )
+    )
+  
+  return(virulence_hits)
+}
+
+                                # Run virulence factor analysis
+cat("\n=== IDENTIFYING VIRULENCE FACTORS ===\n")
+virulence_results <- identify_virulence_factors(gene_data)
+
+cat("Found", nrow(virulence_results), "potential virulence factors\n")
+
+if (nrow(virulence_results) > 0) {
+  # Create summary statistics
+  summary_stats <- virulence_results %>%
+    group_by(genome, virulence_category) %>%
+    summarise(count = n(), .groups = 'drop') %>%
+    complete(genome, virulence_category, fill = list(count = 0))
+  
+                                  # Overall summary by genome
+  genome_summary <- virulence_results %>%
+    group_by(genome) %>%
+    summarise(
+      total_virulence_genes = n(),
+      total_genes = nrow(filter(gene_data, genome == first(genome))),
+      virulence_percentage = (total_virulence_genes / total_genes) * 100
+    )
+  
+                                  # Print summaries
+  cat("\n=== VIRULENCE FACTOR SUMMARY BY CATEGORY ===\n")
+  print(summary_stats)
+  
+  cat("\n=== VIRULENCE FACTOR SUMMARY BY GENOME ===\n")
+  print(genome_summary)
+  
+                                  # Create visualizations
+  p1 <- ggplot(summary_stats, aes(x = genome, y = count, fill = virulence_category)) +
+    geom_bar(stat = "identity", position = "stack") +
+    labs(title = "Virulence Factor Distribution Across Fungal Genomes",
+         x = "Genome", y = "Number of Virulence Factors",
+         fill = "Virulence Category") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  p2 <- ggplot(genome_summary, aes(x = reorder(genome, -virulence_percentage), y = virulence_percentage)) +
+    geom_bar(stat = "identity", fill = "steelblue", alpha = 0.7) +
+    labs(title = "Percentage of Virulence Factors by Genome",
+         x = "Genome", y = "Percentage (%)") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+                                          # Display plots
+  print(p1)
+  print(p2)
+  
+                                          # Save results
+  write_csv(virulence_results, "fungal_virulence_factors_detailed.csv")
+  write_csv(summary_stats, "virulence_summary_by_category.csv")
+  write_csv(genome_summary, "virulence_summary_by_genome.csv")
+  
+  cat("\nResults saved to:\n")
+  cat("- fungal_virulence_factors_detailed.csv\n")
+  cat("- virulence_summary_by_category.csv\n") 
+  cat("- virulence_summary_by_genome.csv\n")
+  
+  # Show top virulence factors
+  cat("\n=== TOP VIRULENCE FACTORS ===\n")
+  top_factors <- virulence_results %>%
+    count(product, sort = TRUE) %>%
+    head(10)
+  print(top_factors)
+  
+} else {
+  cat("No virulence factors identified.\n")
+  cat("This could be because:\n")
+  cat("1. The annotation terms don't match our keyword list\n")
+  cat("2. The attributes column parsing needs adjustment\n")
+  cat("3. Your files use different annotation conventions\n")
+}
