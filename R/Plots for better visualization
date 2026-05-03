@@ -1,0 +1,388 @@
+# Modified Dashboard with Smaller Plots and Individual Saving
+
+              # This script works well for plotting various types of results from your genomes; additionally, it works well for plotting enhanced results of 10+ genomes
+              # This is an improved script that surpasses the problem with the huge amount of data that could crash the regular plots
+              # Because of its amount, which leads to a lack of space for plotting. 
+  
+
+              # Load required libraries
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(stringr)
+library(patchwork)
+library(RColorBrewer)
+library(ggrepel)
+library(viridis)
+library(tibble)
+
+            # Always require to the package manual for better understanding ^^^^
+
+search()
+
+
+# Set theme for publication-quality plots
+theme_publication <- function(base_size = 10) {  # Reduced base size
+  theme_minimal(base_size = base_size) +
+    theme(
+      text = element_text(family = "sans", color = "black"),
+      plot.title = element_text(face = "bold", hjust = 0.5, size = rel(1.1)),
+      plot.subtitle = element_text(hjust = 0.5, color = "gray50", size = rel(0.9)),
+      axis.title = element_text(face = "bold", size = rel(0.9)),
+      axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = rel(0.8)),
+      axis.text.y = element_text(size = rel(0.8)),
+      legend.title = element_text(face = "bold", size = rel(0.9)),
+      legend.text = element_text(size = rel(0.8)),
+      panel.grid.major = element_line(color = "gray90"),
+      panel.grid.minor = element_blank(),
+      plot.background = element_rect(fill = "white", color = NA),
+      panel.background = element_rect(fill = "white", color = NA),
+      strip.background = element_rect(fill = "gray95", color = "gray80"),
+      strip.text = element_text(face = "bold", size = rel(0.9))
+    )
+}
+
+                                    # COMPACT STACKED BAR PLOT
+p1_compact <- summary_stats %>%
+  group_by(genome) %>%
+  mutate(total_count = sum(count)) %>%
+  ungroup() %>%
+  mutate(genome = reorder(genome, total_count)) %>%
+  ggplot(aes(x = genome, y = count, fill = virulence_category)) +
+  geom_bar(stat = "identity", position = "stack", color = "white", linewidth = 0.1) +
+  scale_fill_brewer(palette = "Set3", name = "Category") +
+  labs(
+    title = "Virulence Factor Distribution",
+    x = NULL,
+    y = "Count"
+  ) +
+  theme_publication() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 7)
+  )
+
+                                  # COMPACT VIRULENCE BURDEN
+p2_compact <- genome_summary %>%
+  mutate(genome = reorder(genome, virulence_percentage)) %>%
+  ggplot(aes(x = genome, y = virulence_percentage)) +
+  geom_segment(aes(xend = genome, yend = 0), color = "gray50", linewidth = 0.5) +
+  geom_point(aes(size = total_virulence_genes, color = virulence_percentage), 
+             alpha = 0.8) +
+  scale_color_viridis(name = "Virulence %", option = "magma", end = 0.9) +
+  scale_size_continuous(name = "Total VF", range = c(2, 6)) +
+  labs(
+    title = "Virulence Burden",
+    x = NULL,
+    y = "Percentage (%)"
+  ) +
+  theme_publication() +
+  coord_flip() +
+  theme(
+    legend.position = "none",
+    axis.text.y = element_text(size = 7)
+  )
+
+                                      # COMPACT TOP FACTORS
+top_factors_compact <- virulence_results %>%
+  count(product, sort = TRUE) %>%
+  head(10) %>%  # Reduced from 15 to 10
+  mutate(
+    product = str_trunc(product, 40),  # Shorter labels
+    product = reorder(product, n)
+  ) %>%
+  ggplot(aes(x = n, y = product)) +
+  geom_segment(aes(xend = 0, yend = product), color = "gray50", linewidth = 0.5) +
+  geom_point(aes(color = n), size = 2) +
+  scale_color_viridis(name = "Count", option = "viridis", end = 0.8) +
+  labs(
+    title = "Top 10 Virulence Factors",
+    x = "Count",
+    y = NULL
+  ) +
+  theme_publication() +
+  theme(
+    legend.position = "none",
+    axis.text.y = element_text(size = 7)
+  )
+
+                                          # COMPACT RICHNESS PLOT
+p4_compact <- genome_summary %>%
+  ggplot(aes(x = total_genes, y = total_virulence_genes)) +
+  geom_point(aes(color = virulence_percentage), size = 3, alpha = 0.7) +
+  geom_smooth(method = "lm", color = "red", linetype = "dashed", 
+              se = FALSE, linewidth = 0.5) +
+  geom_text_repel(aes(label = genome), size = 2.5, max.overlaps = 10) +
+  scale_color_viridis(name = "Virulence %", option = "rocket", end = 0.9) +
+  labs(
+    title = "Virulence vs Genome Size",
+    x = "Total Genes",
+    y = "VF Count"
+  ) +
+  theme_publication() +
+  theme(legend.position = "none")
+
+                                              # COMPACT HEATMAP
+if (exists("heatmap_matrix") && nrow(heatmap_matrix) >= 3) {
+  heatmap_matrix_norm <- heatmap_matrix / rowSums(heatmap_matrix)
+  heatmap_long <- as.data.frame(heatmap_matrix_norm) %>%
+    rownames_to_column("genome") %>%
+    pivot_longer(-genome, names_to = "virulence_category", values_to = "proportion")
+  
+  p5_compact <- heatmap_long %>%
+    group_by(virulence_category) %>%
+    mutate(total_prop = sum(proportion)) %>%
+    ungroup() %>%
+    mutate(
+      genome = factor(genome),
+      virulence_category = reorder(virulence_category, -total_prop)
+    ) %>%
+    ggplot(aes(x = genome, y = virulence_category, fill = proportion)) +
+    geom_tile(color = "white", linewidth = 0.2) +
+    scale_fill_viridis(name = "Proportion", option = "inferno") +
+    labs(
+      title = "Normalized Profiles",
+      x = NULL,
+      y = NULL
+    ) +
+    theme_publication() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 6),
+      axis.text.y = element_text(size = 6),
+      legend.position = "none"
+    )
+} else {
+  p5_compact <- ggplot() + 
+    annotate("text", x = 0.5, y = 0.5, 
+             label = "Heatmap\nNot Available", size = 3) +
+    theme_void()
+}
+
+                                                # COMPACT PREVALENCE PLOT
+prevalence_data <- summary_stats %>%
+  group_by(virulence_category) %>%
+  summarise(
+    prevalence = mean(count > 0) * 100,
+    mean_count = mean(count[count > 0])
+  ) %>%
+  arrange(desc(prevalence))
+
+p6_compact <- prevalence_data %>%
+  head(8) %>%  # Limit to top 8 categories
+  mutate(virulence_category = reorder(virulence_category, prevalence)) %>%
+  ggplot(aes(x = prevalence, y = virulence_category)) +
+  geom_segment(aes(xend = 0, yend = virulence_category), color = "gray50", linewidth = 0.5) +
+  geom_point(aes(size = mean_count, color = prevalence), alpha = 0.8) +
+  scale_color_viridis(name = "Prevalence %", option = "plasma", end = 0.9) +
+  scale_size_continuous(name = "Avg Count", range = c(2, 5)) +
+  labs(
+    title = "Category Prevalence",
+    x = "Prevalence (%)",
+    y = NULL
+  ) +
+  theme_publication() +
+  theme(
+    legend.position = "none",
+    axis.text.y = element_text(size = 7)
+  )
+
+                                                        # CREATE SMALLER DASHBOARD
+compact_dashboard <- (p1_compact + p2_compact + p5_compact) / 
+  (top_factors_compact + p4_compact + p6_compact) +
+  plot_annotation(
+    title = "Virulence Factor Analysis Dashboard",
+    subtitle = "Compact Overview",
+    theme = theme_publication()
+  ) &
+  theme(plot.margin = margin(0.2, 0.2, 0.2, 0.2, "cm"))
+
+                                                        # Try to print the compact dashboard
+tryCatch({
+  print(compact_dashboard)
+  cat("✓ Compact dashboard printed successfully\n")
+}, error = function(e) {
+  cat("! Could not print dashboard - saving individual plots instead\n")
+})
+
+                                                        # Save the compact dashboard with smaller dimensions
+ggsave("compact_dashboard.png", compact_dashboard, 
+       width = 12, height = 8, dpi = 300, bg = "white")
+cat("✓ Compact dashboard saved as 'compact_dashboard.png'\n")
+
+                                                        # INDIVIDUAL HIGH-QUALITY PLOTS (for detailed analysis)
+cat("\n=== GENERATING INDIVIDUAL HIGH-QUALITY PLOTS ===\n")
+
+# A. MAIN STACKED BAR PLOT (full size)
+p1_full <- summary_stats %>%
+  group_by(genome) %>%
+  mutate(total_count = sum(count)) %>%
+  ungroup() %>%
+  mutate(genome = reorder(genome, total_count)) %>%
+  ggplot(aes(x = genome, y = count, fill = virulence_category)) +
+  geom_bar(stat = "identity", position = "stack", color = "white", linewidth = 0.2) +
+  scale_fill_brewer(palette = "Set3", name = "Virulence Category") +
+  labs(
+    title = "Distribution of Virulence Factors Across Fungal Genomes",
+    subtitle = "Stacked by functional categories",
+    x = "Fungal Genome",
+    y = "Number of Virulence Factors"
+  ) +
+  theme_publication(base_size = 11) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave("01_stacked_bar_full.png", p1_full, width = 14, height = 8, dpi = 300)
+cat("✓ 01_stacked_bar_full.png\n")
+
+                                                          # VIRULENCE BURDEN (full size)
+p2_full <- genome_summary %>%
+  mutate(genome = reorder(genome, virulence_percentage)) %>%
+  ggplot(aes(x = genome, y = virulence_percentage)) +
+  geom_segment(aes(xend = genome, yend = 0), color = "gray50", linewidth = 0.8) +
+  geom_point(aes(size = total_virulence_genes, color = virulence_percentage), 
+             alpha = 0.8) +
+  scale_color_viridis(name = "Virulence %", option = "magma", end = 0.9) +
+  scale_size_continuous(name = "Total VF Genes", range = c(3, 10)) +
+  labs(
+    title = "Virulence Burden Across Genomes",
+    subtitle = "Percentage and absolute count of virulence factors",
+    x = "Fungal Genome",
+    y = "Virulence Factor Percentage (%)"
+  ) +
+  theme_publication(base_size = 11) +
+  coord_flip()
+
+ggsave("02_virulence_burden_full.png", p2_full, width = 12, height = 8, dpi = 300)
+cat("✓ 02_virulence_burden_full.png\n")
+
+# C. TOP FACTORS (full size)
+p3_full <- virulence_results %>%
+  count(product, sort = TRUE) %>%
+  head(15) %>%
+  mutate(
+    product = str_trunc(product, 60),
+    product = reorder(product, n)
+  ) %>%
+  ggplot(aes(x = n, y = product)) +
+  geom_segment(aes(xend = 0, yend = product), color = "gray50", linewidth = 0.8) +
+  geom_point(aes(color = n), size = 4, alpha = 0.8) +
+  scale_color_viridis(name = "Count", option = "viridis", end = 0.8) +
+  labs(
+    title = "Most Common Virulence Factors",
+    subtitle = "Top 15 virulence factors across all genomes",
+    x = "Number of Genomes Containing Factor",
+    y = "Virulence Factor"
+  ) +
+  theme_publication(base_size = 11)
+
+ggsave("03_top_factors_full.png", p3_full, width = 12, height = 10, dpi = 300)
+cat("✓ 03_top_factors_full.png\n")
+
+                                                                      # RICHNESS PLOT (full size)
+p4_full <- genome_summary %>%
+  ggplot(aes(x = total_genes, y = total_virulence_genes)) +
+  geom_point(aes(color = virulence_percentage, size = virulence_percentage), 
+             alpha = 0.7) +
+  geom_smooth(method = "lm", color = "red", linetype = "dashed", 
+              se = TRUE, alpha = 0.2) +
+  geom_text_repel(aes(label = genome), size = 4, max.overlaps = 20) +
+  scale_color_viridis(name = "Virulence %", option = "rocket", end = 0.9) +
+  scale_size_continuous(name = "Virulence %", range = c(2, 8)) +
+  labs(
+    title = "Virulence Factor Richness vs Genome Size",
+    subtitle = "Relationship between total genes and virulence factors",
+    x = "Total Genes in Genome",
+    y = "Number of Virulence Factors"
+  ) +
+  theme_publication(base_size = 11)
+
+ggsave("04_richness_plot_full.png", p4_full, width = 12, height = 8, dpi = 300)
+cat("✓ 04_richness_plot_full.png\n")
+
+                                                                # HEATMAP (full size)
+if (exists("heatmap_matrix") && nrow(heatmap_matrix) >= 3) {
+  p5_full <- heatmap_long %>%
+    group_by(virulence_category) %>%
+    mutate(total_prop = sum(proportion)) %>%
+    ungroup() %>%
+    mutate(
+      genome = factor(genome),
+      virulence_category = reorder(virulence_category, -total_prop)
+    ) %>%
+    ggplot(aes(x = genome, y = virulence_category, fill = proportion)) +
+    geom_tile(color = "white", linewidth = 0.5) +
+    scale_fill_viridis(name = "Proportion", option = "inferno", 
+                       labels = scales::percent) +
+    labs(
+      title = "Normalized Virulence Factor Profiles",
+      subtitle = "Proportional distribution across genomes",
+      x = "Genome",
+      y = "Virulence Category"
+    ) +
+    theme_publication(base_size = 11) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  ggsave("05_heatmap_full.png", p5_full, width = 14, height = 10, dpi = 300)
+  cat("✓ 05_heatmap_full.png\n")
+}
+
+                                                        # PREVALENCE PLOT (full size)
+p6_full <- prevalence_data %>%
+  mutate(virulence_category = reorder(virulence_category, prevalence)) %>%
+  ggplot(aes(x = prevalence, y = virulence_category)) +
+  geom_segment(aes(xend = 0, yend = virulence_category), color = "gray50", linewidth = 0.8) +
+  geom_point(aes(size = mean_count, color = prevalence), alpha = 0.8, size = 4) +
+  scale_color_viridis(name = "Prevalence %", option = "plasma", end = 0.9) +
+  scale_size_continuous(name = "Average Count\n(when present)", range = c(2, 8)) +
+  labs(
+    title = "Virulence Factor Prevalence Across Genomes",
+    subtitle = "How common each virulence category is across all genomes",
+    x = "Prevalence (% of genomes containing category)",
+    y = "Virulence Category"
+  ) +
+  theme_publication(base_size = 11)
+
+ggsave("06_prevalence_full.png", p6_full, width = 12, height = 10, dpi = 300)
+cat("✓ 06_prevalence_full.png\n")
+
+# Print individual plots to screen
+cat("\n=== PRINTING INDIVIDUAL PLOTS TO SCREEN ===\n")
+print(p1_full)
+cat("✓ Stacked bar plot displayed\n")
+
+print(p2_full)
+cat("✓ Virulence burden plot displayed\n")
+
+print(p3_full)
+cat("✓ Top factors plot displayed\n")
+
+print(p4_full)
+cat("✓ Richness plot displayed\n")
+
+if (exists("p5_full")) {
+  print(p5_full)
+  cat("✓ Heatmap displayed\n")
+}
+
+print(p6_full)
+cat("✓ Prevalence plot displayed\n")
+
+                                                          # SUMMARY STATISTICS
+cat("\n=== ANALYSIS SUMMARY ===\n")
+cat("Total genomes analyzed:", length(unique(summary_stats$genome)), "\n")
+cat("Total virulence factors identified:", sum(summary_stats$count), "\n")
+cat("Average virulence factors per genome:", round(mean(genome_summary$total_virulence_genes), 1), "\n")
+cat("Range of virulence percentage:", round(min(genome_summary$virulence_percentage), 1), 
+    "% to", round(max(genome_summary$virulence_percentage), 1), "%\n")
+cat("Most common virulence category:", prevalence_data$virulence_category[1], 
+    "(", round(prevalence_data$prevalence[1], 1), "% prevalence)\n")
+
+cat("\n=== FILES SAVED ===\n")
+cat("1. compact_dashboard.png - All plots in one compact view\n")
+cat("2. 01_stacked_bar_full.png - Detailed stacked bar plot\n")
+cat("3. 02_virulence_burden_full.png - Virulence percentage analysis\n")
+cat("4. 03_top_factors_full.png - Most common virulence factors\n")
+cat("5. 04_richness_plot_full.png - Relationship with genome size\n")
+cat("6. 05_heatmap_full.png - Normalized heatmap (if available)\n")
+cat("7. 06_prevalence_full.png - Category prevalence analysis\n")
+
+cat("\n✓ All visualizations completed successfully!\n")
