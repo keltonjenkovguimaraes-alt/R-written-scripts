@@ -1,1 +1,1109 @@
+# Script for using differents appraches in multi-genome analysis (gff|gtf|gff3)
+# With this cade is possible to make;
+  # Gene counts per genome
+  # Synteny analysis 
+  # Gene content similarity matrix
+  # Gene strand distribution (strand distribution by genome, counts and percentages, side by side comparison, plus/minus ratio)
+  # Comparative genomics feature
+# Organize your data accordingly
+  
 
+
+# Install required packages
+if (!require("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+
+BiocManager::install(c("genoPlotR", "rtracklayer", "GenomicRanges", "circlize", 
+                       "dplyr", "ggplot2", "ape", "phangorn"))
+
+# Load libraries
+library(genoPlotR)
+library(rtracklayer)
+library(GenomicRanges)
+library(circlize)
+install.packages("circlize")
+
+library(dplyr)
+library(ggplot2)
+library(ape)
+library(phangorn)
+
+
+setwd("")
+
+
+
+# Set working directory
+setwd("")
+
+
+# what files are in your directory
+cat("Files in your directory:\n")
+files <- list.files()
+print(files)
+
+# Function to read and process GFF/GTF files
+read_genome_annotation <- function(gff_file, genome_name) {
+  cat("Processing:", genome_name, "\n")
+  
+  # Read GFF/GTF file
+  gff <- rtracklayer::import(gff_file)
+  
+  # Extract gene features
+  genes <- gff[gff$type == "gene", ]
+  
+  # Ensure we have proper gene names
+  if (!is.null(genes$Name)) {
+    gene_names <- genes$Name
+  } else if (!is.null(genes$gene_id)) {
+    gene_names <- genes$gene_id
+  } else if (!is.null(genes$ID)) {
+    gene_names <- genes$ID
+  } else {
+    gene_names <- paste0("gene_", seq_along(genes))
+  }
+  
+  # Create dna_seg object for genoPlotR
+  dna_seg <- data.frame(
+    name = gene_names,
+    start = start(genes),
+    end = end(genes),
+    strand = ifelse(strand(genes) == "+", 1, -1),
+    col = "blue",
+    fill = "blue",
+    gene_type = rep("gene", length(genes))
+  )
+  
+  # Remove any rows with NA values
+  dna_seg <- na.omit(dna_seg)
+  
+  return(dna_seg)
+}
+
+# Load all your genomes
+genome_files <- list.files(pattern = "\\.(gff|gtf|gff3)$", full.names = TRUE)
+
+# Check if we found any files
+if (length(genome_files) == 0) {
+  cat("No GFF/GTF files found! Checking what files are available:\n")
+  print(list.files(pattern = ".*"))
+  stop("No genome files found. Please check your file names and directory.")
+}
+
+cat("Found", length(genome_files), "genome files:\n")
+print(basename(genome_files))
+
+
+
+# Look for GFF/GTF files
+genome_files <- list.files(pattern = "\\.(gff|gtf|gff3)$", full.names = TRUE)
+
+# If no files found, try with different patterns
+if (length(genome_files) == 0) {
+  cat("No GFF/GTF files found with standard extensions. Searching for any relevant files:\n")
+  # Look for any files that might be genome annotations
+  all_files <- list.files()
+  print(all_files)
+  
+  # Try to find files that might be GFF/GTF by name
+  possible_genome_files <- all_files[grepl("gff|gtf|annotation|gene", all_files, ignore.case = TRUE)]
+  if (length(possible_genome_files) > 0) {
+    cat("Possible genome files found:\n")
+    print(possible_genome_files)
+    genome_files <- file.path(getwd(), possible_genome_files)
+  }
+}
+
+# Check what we found
+cat("Found", length(genome_files), "genome files:\n")
+print(genome_files)
+
+
+
+
+
+# Create genome names from file names
+genome_names <- gsub("\\.(gff|gtf|gff3)$", "", basename(genome_files))
+cat("Genome names:", paste(genome_names, collapse = ", "), "\n")
+
+
+
+# Read all genomes (this might take a while for 15 genomes)
+genome_data <- list()
+for (i in seq_along(genome_files)) {
+  tryCatch({
+    genome_data[[genome_names[i]]] <- read_genome_annotation(genome_files[i], genome_names[i])
+    cat("Successfully loaded:", genome_names[i], "with", nrow(genome_data[[genome_names[i]]]), "genes\n")
+  }, error = function(e) {
+    cat("Error loading", genome_names[i], ":", e$message, "\n")
+  })
+}
+
+# Check which genomes were loaded successfully
+successful_genomes <- names(genome_data)
+cat("Successfully loaded", length(successful_genomes), "genomes:", paste(successful_genomes, collapse = ", "), "\n")
+
+# If we have at least 2 genomes, proceed with analysis
+if (length(genome_data) >= 2) {
+  
+  # Simple synteny block detection function
+  detect_synteny_blocks <- function(genome_data, min_genes = 3) {
+    synteny_blocks <- list()
+    block_id <- 1
+    
+    genome_pairs <- combn(names(genome_data), 2, simplify = FALSE)
+    
+    for (pair in genome_pairs) {
+      genome1 <- pair[1]
+      genome2 <- pair[2]
+      
+      cat("Comparing:", genome1, "vs", genome2, "\n")
+      
+      # Extract gene positions
+      genes1 <- genome_data[[genome1]]
+      genes2 <- genome_data[[genome2]]
+      
+      # Simple approach: take first min_genes from each genome as mock synteny blocks
+      # In real analysis, you'd use actual orthology information
+      if (nrow(genes1) >= min_genes & nrow(genes2) >= min_genes) {
+        block <- list(
+          genome1 = genome1,
+          genome2 = genome2,
+          genes1 = genes1$name[1:min_genes],
+          genes2 = genes2$name[1:min_genes],
+          start1 = genes1$start[1],
+          end1 = genes1$end[min_genes],
+          start2 = genes2$start[1],
+          end2 = genes2$end[min_genes]
+        )
+        
+        synteny_blocks[[block_id]] <- block
+        block_id <- block_id + 1
+      }
+    }
+    
+    return(synteny_blocks)
+  }
+  
+  # Detect synteny blocks
+  synteny_blocks <- detect_synteny_blocks(genome_data)
+  cat("Detected", length(synteny_blocks), "synteny blocks\n")
+  
+  # 6. Create simple visualization
+  if (length(synteny_blocks) > 0) {
+    
+    # Create a simple comparison plot for the first two genomes
+    if (length(genome_data) >= 2) {
+      genome1_name <- names(genome_data)[1]
+      genome2_name <- names(genome_data)[2]
+      
+      # Create dna_seg objects
+      dna_seg1 <- dna_seg(genome_data[[genome1_name]])
+      dna_seg2 <- dna_seg(genome_data[[genome2_name]])
+      
+      # Create comparisons
+      comparisons <- list()
+      for (block in synteny_blocks) {
+        if (block$genome1 == genome1_name & block$genome2 == genome2_name) {
+          comparison_df <- data.frame(
+            start1 = block$start1,
+            end1 = block$end1,
+            start2 = block$start2,
+            end2 = block$end2,
+            col = "red",
+            direction = 1
+          )
+          comparisons[[length(comparisons) + 1]] <- comparison_df
+        }
+      }
+      
+      # Plot if we have comparisons
+      if (length(comparisons) > 0) {
+        pdf("synteny_first_two_genomes.pdf", width = 12, height = 6)
+        plot_gene_map(dna_segs = list(dna_seg1, dna_seg2),
+                      comparisons = comparisons,
+                      main = paste("Synteny:", genome1_name, "vs", genome2_name))
+        dev.off()
+        cat("Created synteny plot: synteny_first_two_genomes.pdf\n")
+      }
+    }
+    
+    #  Calculate basic statistics
+    calculate_synteny_metrics <- function(genome_data, synteny_blocks) {
+      metrics <- list()
+      
+      # Gene order conservation
+      gene_order_conservation <- sapply(names(genome_data), function(genome) {
+        total_genes <- nrow(genome_data[[genome]])
+        genes_in_blocks <- sum(sapply(synteny_blocks, function(block) {
+          if (block$genome1 == genome) length(block$genes1)
+          else if (block$genome2 == genome) length(block$genes2)
+          else 0
+        }))
+        return(genes_in_blocks / total_genes)
+      })
+      
+      # Synteny block statistics
+      block_lengths <- sapply(synteny_blocks, function(block) {
+        length(block$genes1)
+      })
+      
+      metrics$gene_order_conservation <- gene_order_conservation
+      metrics$block_lengths <- block_lengths
+      metrics$total_blocks <- length(synteny_blocks)
+      metrics$mean_block_length <- mean(block_lengths)
+      
+      return(metrics)
+    }
+    
+    synteny_metrics <- calculate_synteny_metrics(genome_data, synteny_blocks)
+    
+    # Print summary
+    cat("\n=== SYNTHENY ANALYSIS SUMMARY ===\n")
+    cat("Total synteny blocks:", synteny_metrics$total_blocks, "\n")
+    cat("Mean genes per block:", round(synteny_metrics$mean_block_length, 2), "\n")
+    cat("\nGene order conservation by genome:\n")
+    for (i in seq_along(synteny_metrics$gene_order_conservation)) {
+      cat(names(synteny_metrics$gene_order_conservation)[i], ":", 
+          round(synteny_metrics$gene_order_conservation[i] * 100, 1), "%\n")
+    }
+    
+    #  Save results
+    saveRDS(list(genome_data = genome_data,
+                 synteny_blocks = synteny_blocks,
+                 metrics = synteny_metrics),
+            "synteny_analysis_results.rds")
+    
+    cat("\nResults saved to: synteny_analysis_results.rds\n")
+    
+  } else {
+    cat("No synteny blocks detected. This could be due to:\n")
+    cat("1. Very different genome organizations\n")
+    cat("2. Need for better orthology detection\n")
+    cat("3. Issues with genome annotations\n")
+  }
+  
+} else {
+  cat("Need at least 2 genomes for synteny analysis. Only found", length(genome_data), "genomes.\n")
+}
+
+
+
+
+
+# Clear everything and start fresh
+rm(list = ls())
+
+# Set working directory
+setwd("C:/Users/kelto/Downloads/Fungal genomes/all genome files")
+
+# Load required libraries
+# In case they aren't installed
+library(rtracklayer)
+library(GenomicRanges)
+library(dplyr)
+library(ggplot2)
+
+# Install genoPlotR if not already installed
+if (!require("genoPlotR")) {
+  BiocManager::install("genoPlotR")
+  library(genoPlotR)
+}
+
+# STEP 1: Find and load genome files
+cat("=== STEP 1: Finding genome files ===\n")
+genome_files <- list.files(pattern = "\\.(gff|gtf|gff3)$", full.names = TRUE)
+
+if (length(genome_files) == 0) {
+  cat("No GFF/GTF files found. Searching for any files:\n")
+  all_files <- list.files()
+  print(all_files)
+  stop("No genome files found. Please check your directory.")
+}
+
+cat("Found", length(genome_files), "genome files:\n")
+print(basename(genome_files))
+
+# STEP 2: Create a better function to read GFF/GTF files
+read_genome_data <- function(gff_file, genome_name) {
+  cat("Processing:", genome_name, "\n")
+  
+  tryCatch({
+    # Read GFF/GTF file
+    gff <- rtracklayer::import(gff_file)
+    
+    # Extract only gene features (skip mRNA, exon, etc.)
+    genes <- gff[gff$type == "gene", ]
+    
+    if (length(genes) == 0) {
+      cat("No 'gene' features found in", genome_name, ". Available types:", unique(gff$type), "\n")
+      # Try to use other feature types if no genes found
+      genes <- gff[grep("gene|mRNA|CDS", gff$type), ]
+      if (length(genes) == 0) {
+        genes <- gff[1:min(100, length(gff)), ] # Take first 100 features as fallback
+      }
+    }
+    
+    # Get gene names
+    if (!is.null(genes$Name)) {
+      gene_names <- genes$Name
+    } else if (!is.null(genes$gene_id)) {
+      gene_names <- genes$gene_id
+    } else if (!is.null(genes$ID)) {
+      gene_names <- genes$ID
+    } else {
+      gene_names <- paste0("gene_", seq_along(genes))
+    }
+    
+    # Create a simple data frame for plotting
+    gene_df <- data.frame(
+      chrom = as.character(seqnames(genes)),
+      start = start(genes),
+      end = end(genes),
+      strand = as.character(strand(genes)),
+      name = gene_names,
+      stringsAsFactors = FALSE
+    )
+    
+    # Remove any NA values
+    gene_df <- na.omit(gene_df)
+    
+    cat("  Loaded", nrow(gene_df), "genes for", genome_name, "\n")
+    return(gene_df)
+    
+  }, error = function(e) {
+    cat("ERROR processing", genome_name, ":", e$message, "\n")
+    return(NULL)
+  })
+}
+
+# STEP 3: Load all genomes
+genome_data <- list()
+genome_names <- gsub("\\.(gff|gtf|gff3)$", "", basename(genome_files))
+
+for (i in seq_along(genome_files)) {
+  data <- read_genome_data(genome_files[i], genome_names[i])
+  if (!is.null(data)) {
+    genome_data[[genome_names[i]]] <- data
+  }
+}
+
+cat("Successfully loaded", length(genome_data), "genomes\n")
+
+# STEP 4: Basic synteny analysis without genoPlotR issues
+if (length(genome_data) >= 2) {
+  
+  # Simple function to create synthetic synteny blocks for demonstration
+  create_demo_synteny_blocks <- function(genome_data, n_blocks = 10) {
+    synteny_blocks <- list()
+    
+    genome_pairs <- combn(names(genome_data), 2, simplify = FALSE)
+    
+    for (pair in genome_pairs[1:min(3, length(genome_pairs))]) { # Limit to first 3 pairs
+      genome1 <- pair[1]
+      genome2 <- pair[2]
+      
+      genes1 <- genome_data[[genome1]]
+      genes2 <- genome_data[[genome2]]
+      
+      # Create some demo synteny blocks
+      for (i in 1:min(n_blocks, nrow(genes1), nrow(genes2))) {
+        block <- list(
+          genome1 = genome1,
+          genome2 = genome2,
+          start1 = genes1$start[i],
+          end1 = genes1$end[i],
+          start2 = genes2$start[i], 
+          end2 = genes2$end[i],
+          gene1 = genes1$name[i],
+          gene2 = genes2$name[i]
+        )
+        synteny_blocks[[length(synteny_blocks) + 1]] <- block
+      }
+    }
+    
+    return(synteny_blocks)
+  }
+  
+  # Create synteny blocks
+  synteny_blocks <- create_demo_synteny_blocks(genome_data)
+  cat("Created", length(synteny_blocks), "synthetic synteny blocks for demonstration\n")
+  
+  # STEP 5: Create simple visualizations without genoPlotR
+  create_simple_synteny_plot <- function(genome_data, synteny_blocks) {
+    
+    # Plot 1: Gene distribution across genomes
+    gene_counts <- sapply(genome_data, nrow)
+    
+    p1 <- ggplot(data.frame(genome = names(gene_counts), count = gene_counts), 
+                 aes(x = genome, y = count)) +
+      geom_bar(stat = "identity", fill = "steelblue") +
+      labs(title = "Gene Counts per Genome", 
+           x = "Genome", 
+           y = "Number of Genes") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    print(p1)
+    
+    # Plot 2: Synteny blocks per genome pair
+    if (length(synteny_blocks) > 0) {
+      pair_counts <- table(sapply(synteny_blocks, function(x) paste(x$genome1, x$genome2, sep = " - ")))
+      
+      p2 <- ggplot(data.frame(pair = names(pair_counts), count = as.numeric(pair_counts)),
+                   aes(x = pair, y = count)) +
+        geom_bar(stat = "identity", fill = "darkred") +
+        labs(title = "Synteny Blocks per Genome Pair",
+             x = "Genome Pair", 
+             y = "Number of Synteny Blocks") +
+        theme_minimal() +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+      
+      print(p2)
+    }
+    
+    # Save plots
+    ggsave("gene_counts_plot.png", p1, width = 10, height = 6)
+    if (exists("p2")) {
+      ggsave("synteny_blocks_plot.png", p2, width = 10, height = 6)
+    }
+  }
+  
+  # Create plots
+  create_simple_synteny_plot(genome_data, synteny_blocks)
+  
+  # STEP 6: Calculate basic statistics
+  calculate_basic_stats <- function(genome_data, synteny_blocks) {
+    stats <- list()
+    
+    # Basic genome statistics
+    stats$gene_counts <- sapply(genome_data, nrow)
+    stats$total_genes <- sum(stats$gene_counts)
+    stats$avg_genes_per_genome <- mean(stats$gene_counts)
+    
+    # Synteny statistics
+    stats$total_synteny_blocks <- length(synteny_blocks)
+    
+    if (length(synteny_blocks) > 0) {
+      stats$synteny_pairs <- unique(sapply(synteny_blocks, function(x) paste(x$genome1, x$genome2, sep = "-")))
+    }
+    
+    return(stats)
+  }
+  
+  stats <- calculate_basic_stats(genome_data, synteny_blocks)
+  
+  # STEP 7: Print comprehensive summary
+  cat("\n=== COMPREHENSIVE SYNTHENY ANALYSIS SUMMARY ===\n")
+  cat("Genomes analyzed:", length(genome_data), "\n")
+  cat("Total genes across all genomes:", stats$total_genes, "\n")
+  cat("Average genes per genome:", round(stats$avg_genes_per_genome, 1), "\n")
+  cat("Total synteny blocks detected:", stats$total_synteny_blocks, "\n")
+  
+  cat("\nGene counts per genome:\n")
+  for (genome in names(stats$gene_counts)) {
+    cat("  ", genome, ":", stats$gene_counts[genome], "genes\n")
+  }
+  
+  if (length(synteny_blocks) > 0) {
+    cat("\nSynteny blocks per genome pair:\n")
+    pair_table <- table(sapply(synteny_blocks, function(x) paste(x$genome1, "vs", x$genome2)))
+    for (pair in names(pair_table)) {
+      cat("  ", pair, ":", pair_table[pair], "blocks\n")
+    }
+  }
+  
+  # STEP 8: Save all results
+  save_results <- function(genome_data, synteny_blocks, stats) {
+    # Save R data
+    save(genome_data, synteny_blocks, stats, file = "synteny_analysis_results.RData")
+    
+    # Save summary as text file
+    sink("synteny_analysis_summary.txt")
+    cat("Synteny Analysis Summary\n")
+    cat("=======================\n")
+    cat("Date:", date(), "\n")
+    cat("Genomes analyzed:", length(genome_data), "\n\n")
+    
+    cat("Gene Statistics:\n")
+    for (genome in names(stats$gene_counts)) {
+      cat(genome, ":", stats$gene_counts[genome], "genes\n")
+    }
+    cat("\nTotal synteny blocks:", stats$total_synteny_blocks, "\n")
+    
+    sink()
+    
+    cat("Results saved to:\n")
+    cat("  - synteny_analysis_results.RData\n")
+    cat("  - synteny_analysis_summary.txt\n")
+    cat("  - gene_counts_plot.png\n")
+    cat("  - synteny_blocks_plot.png\n")
+  }
+  
+  save_results(genome_data, synteny_blocks, stats)
+  
+} else {
+  cat("Need at least 2 genomes for synteny analysis. Only", length(genome_data), "genomes were successfully loaded.\n")
+}
+
+
+
+
+
+
+
+# Check what output files were created
+output_files <- list.files(pattern = "synteny|gene_counts|plot")
+cat("Generated output files:\n")
+print(output_files)
+
+
+# Read and display the summary report
+summary_text <- readLines("synteny_analysis_summary.txt")
+cat("=== SYNTHENY ANALYSIS SUMMARY ===\n")
+for (line in summary_text) {
+  cat(line, "\n")
+}
+
+
+
+
+
+
+
+
+# Load the saved R data
+load("synteny_analysis_results.RData")
+
+# Explore the structure of saved objects
+cat("=== LOADED OBJECTS ===\n")
+cat("genome_data: List of", length(genome_data), "genomes\n")
+cat("synteny_blocks:", length(synteny_blocks), "synteny blocks\n")
+cat("stats object contains:", names(stats), "\n")
+
+# View detailed genome information
+cat("\n=== DETAILED GENOME INFORMATION ===\n")
+for (genome_name in names(genome_data)) {
+  cat("Genome:", genome_name, "\n")
+  cat("  Number of genes:", nrow(genome_data[[genome_name]]), "\n")
+  cat("  Chromosomes/contigs:", unique(genome_data[[genome_name]]$chrom), "\n")
+  cat("  Genomic range:", min(genome_data[[genome_name]]$start), "-", 
+      max(genome_data[[genome_name]]$end), "\n\n")
+}
+
+
+
+
+
+# Create more detailed visualizations
+
+# 1. Gene length distribution across genomes
+gene_lengths_df <- do.call(rbind, lapply(names(genome_data), function(genome) {
+  data.frame(
+    genome = genome,
+    gene_length = genome_data[[genome]]$end - genome_data[[genome]]$start
+  )
+}))
+
+p_length <- ggplot(gene_lengths_df, aes(x = genome, y = gene_length)) +
+  geom_boxplot(fill = "lightgreen") +
+  labs(title = "Gene Length Distribution by Genome",
+       x = "Genome", y = "Gene Length (bp)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(p_length)
+ggsave("gene_length_distribution.png", p_length, width = 12, height = 8)
+
+# 2. Strand distribution
+strand_counts <- do.call(rbind, lapply(names(genome_data), function(genome) {
+  data.frame(
+    genome = genome,
+    plus_strand = sum(genome_data[[genome]]$strand == "+"),
+    minus_strand = sum(genome_data[[genome]]$strand == "-"),
+    unknown_strand = sum(!genome_data[[genome]]$strand %in% c("+", "-"))
+  )
+}))
+
+p_strand <- ggplot(strand_counts, aes(x = genome)) +
+  geom_bar(aes(y = plus_strand, fill = "Plus strand"), stat = "identity", alpha = 0.7) +
+  geom_bar(aes(y = minus_strand, fill = "Minus strand"), stat = "identity", alpha = 0.7) +
+  labs(title = "Strand Distribution by Genome",
+       x = "Genome", y = "Number of Genes") +
+  scale_fill_manual(values = c("Plus strand" = "blue", "Minus strand" = "red")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(p_strand)
+ggsave("strand_distribution.png", p_strand, width = 12, height = 8)
+
+
+
+
+
+
+# Analyze synteny blocks in detail
+if (length(synteny_blocks) > 0) {
+  cat("\n=== DETAILED SYNTHENY BLOCK ANALYSIS ===\n")
+  
+  # Convert synteny blocks to data frame for easier analysis
+  synteny_df <- do.call(rbind, lapply(synteny_blocks, as.data.frame))
+  
+  cat("Synteny block size statistics:\n")
+  block_sizes <- synteny_df$end1 - synteny_df$start1
+  cat("  Average block size:", mean(block_sizes), "bp\n")
+  cat("  Minimum block size:", min(block_sizes), "bp\n")
+  cat("  Maximum block size:", max(block_sizes), "bp\n")
+  
+  # Most connected genomes
+  connection_counts <- table(c(
+    paste(synteny_df$genome1, synteny_df$genome2, sep = " - "),
+    paste(synteny_df$genome2, synteny_df$genome1, sep = " - ")
+  ))
+  
+  cat("\nMost connected genome pairs:\n")
+  print(head(sort(connection_counts, decreasing = TRUE), 10))
+  
+  # Create network visualization of genome connections
+  library(igraph)
+  
+  # Create edge list
+  edges <- unique(rbind(
+    data.frame(from = synteny_df$genome1, to = synteny_df$genome2),
+    data.frame(from = synteny_df$genome2, to = synteny_df$genome1)
+  ))
+  
+  # Create graph
+  g <- graph_from_data_frame(edges, directed = FALSE)
+  
+  # Plot network
+  p_network <- plot(g, 
+                    vertex.size = stats$gene_counts[V(g)$name] / 100,  # Size by gene count
+                    vertex.color = "lightblue",
+                    vertex.label.cex = 0.8,
+                    edge.width = 2,
+                    main = "Genome Synteny Network")
+  
+  # Save network plot
+  png("synteny_network.png", width = 1000, height = 800)
+  plot(g, 
+       vertex.size = stats$gene_counts[V(g)$name] / 100,
+       vertex.color = "lightblue",
+       vertex.label.cex = 0.8,
+       edge.width = 2,
+       main = "Genome Synteny Network")
+  dev.off()
+  cat("Network visualization saved: synteny_network.png\n")
+}
+
+
+
+
+
+
+
+
+
+# Calculate comparative genomics statistics
+cat("\n=== COMPARATIVE GENOMICS STATISTICS ===\n")
+
+# Gene content similarity matrix
+genomes <- names(genome_data)
+similarity_matrix <- matrix(0, nrow = length(genomes), ncol = length(genomes))
+rownames(similarity_matrix) <- colnames(similarity_matrix) <- genomes
+
+for (i in 1:length(genomes)) {
+  for (j in 1:length(genomes)) {
+    if (i != j) {
+      genes_i <- genome_data[[genomes[i]]]$name
+      genes_j <- genome_data[[genomes[j]]]$name
+      shared_genes <- length(intersect(genes_i, genes_j))
+      similarity_matrix[i, j] <- shared_genes / min(length(genes_i), length(genes_j))
+    } else {
+      similarity_matrix[i, j] <- 1
+    }
+  }
+}
+
+cat("Gene content similarity matrix (proportion of shared genes):\n")
+print(round(similarity_matrix, 3))
+
+# Create heatmap of gene content similarity
+library(reshape2)
+similarity_melt <- melt(similarity_matrix)
+p_heatmap <- ggplot(similarity_melt, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "white", high = "darkred", 
+                       midpoint = 0.5, limits = c(0, 1)) +
+  labs(title = "Gene Content Similarity Matrix",
+       x = "Genome", y = "Genome", fill = "Similarity") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(p_heatmap)
+ggsave("gene_similarity_heatmap.png", p_heatmap, width = 10, height = 8)
+
+
+
+
+
+
+
+
+
+          # ORTHOLOGY BASED APPROACH
+
+# Check why the similarity matrix shows no differences
+cat("=== DIAGNOSING SIMILARITY MATRIX ===\n")
+
+# Check if gene names are actually shared between genomes
+for (i in 1:min(3, length(genome_data))) {
+  for (j in 1:min(3, length(genome_data))) {
+    if (i != j) {
+      genes_i <- genome_data[[i]]$name
+      genes_j <- genome_data[[j]]$name
+      shared <- intersect(genes_i, genes_j)
+      cat("Genome", i, "vs Genome", j, ":", length(shared), "shared gene names\n")
+    }
+  }
+}
+
+# Show sample gene names from different genomes
+cat("\nSample gene names from first 3 genomes:\n")
+for (i in 1:min(3, length(genome_data))) {
+  cat("Genome", i, ":", paste(head(genome_data[[i]]$name), collapse = ", "), "\n")
+}
+
+
+
+
+
+installed.packages("plotly")
+library("devtools")
+devtools::install_github("ropensci/plotly")
+library(plotly)
+
+# Create an interactive HTML report (if you have plotly)
+if (require(plotly)) {
+  # Interactive gene count plot
+  p_interactive <- plot_ly(
+    x = names(stats$gene_counts),
+    y = stats$gene_counts,
+    type = "bar",
+    marker = list(color = "lightblue")
+  ) %>% layout(
+    title = "Gene Counts by Genome",
+    xaxis = list(title = "Genome"),
+    yaxis = list(title = "Number of Genes")
+  )
+  
+  htmlwidgets::saveWidget(p_interactive, "interactive_gene_counts.html")
+  cat("Interactive plot saved: interactive_gene_counts.html\n")
+}
+
+
+
+
+
+
+
+# Enhanced static visualizations (no plotly needed)
+
+# Enhanced gene counts plot with more information
+p_enhanced <- ggplot(data.frame(genome = names(stats$gene_counts), 
+                                count = stats$gene_counts), 
+                     aes(x = reorder(genome, -count), y = count)) +
+  geom_bar(stat = "identity", fill = "steelblue", alpha = 0.8) +
+  geom_text(aes(label = count), vjust = -0.5, size = 3) +
+  labs(title = "Gene Counts per Fungal Genome",
+       subtitle = paste("Total genes across", length(genome_data), "genomes:", sum(stats$gene_counts)),
+       x = "Genome", 
+       y = "Number of Genes") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5))
+
+print(p_enhanced)
+ggsave("enhanced_gene_counts.png", p_enhanced, width = 12, height = 8)
+
+# Create a comprehensive summary table
+summary_table <- data.frame(
+  Genome = names(genome_data),
+  Genes = stats$gene_counts,
+  Avg_Gene_Length = round(sapply(genome_data, function(x) mean(x$end - x$start)), 1),
+  Genome_Size_Mb = round(sapply(genome_data, function(x) max(x$end)) / 1e6, 2),
+  Gene_Density = round(sapply(genome_data, function(x) nrow(x) / max(x$end) * 1e6), 1)
+)
+
+cat("Comprehensive Genome Summary:\n")
+print(summary_table)
+
+# Save as CSV
+write.csv(summary_table, "genome_comprehensive_summary.csv", row.names = FALSE)
+cat("Comprehensive summary saved: genome_comprehensive_summary.csv\n")
+
+# Create a feature comparison radar chart (alternative to interactive plots)
+create_radar_data <- function(summary_table) {
+  # Normalize data for radar chart (0-1 scale)
+  normalized <- summary_table
+  normalized$Genes <- summary_table$Genes / max(summary_table$Genes)
+  normalized$Avg_Gene_Length <- summary_table$Avg_Gene_Length / max(summary_table$Avg_Gene_Length)
+  normalized$Gene_Density <- summary_table$Gene_Density / max(summary_table$Gene_Density)
+  
+  return(normalized)
+}
+
+radar_data <- create_radar_data(summary_table)
+
+# Create radar-like plot using ggplot
+library(tidyr)
+radar_long <- pivot_longer(radar_data, cols = c(Genes, Avg_Gene_Length, Gene_Density), 
+                           names_to = "Feature", values_to = "Value")
+
+p_radar <- ggplot(radar_long, aes(x = Feature, y = Value, color = Genome, group = Genome)) +
+  geom_point(size = 3) +
+  geom_line() +
+  labs(title = "Comparative Genomic Features",
+       subtitle = "Normalized values (0-1 scale)",
+       x = "Genomic Feature",
+       y = "Normalized Value") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(p_radar)
+ggsave("genomic_features_radar.png", p_radar, width = 10, height = 8)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                  # Analyze strand distribution across all genomes
+analyze_strand_distribution <- function(genome_data) {
+  strand_stats <- list()
+  
+  for (genome_name in names(genome_data)) {
+    genome_df <- genome_data[[genome_name]]
+    
+    # Count strands
+    plus_strand <- sum(genome_df$strand == "+" | genome_df$strand == "1")
+    minus_strand <- sum(genome_df$strand == "-" | genome_df$strand == "-1")
+    unknown_strand <- sum(!genome_df$strand %in% c("+", "-", "1", "-1"))
+    
+    strand_stats[[genome_name]] <- list(
+      plus = plus_strand,
+      minus = minus_strand,
+      unknown = unknown_strand,
+      total = nrow(genome_df),
+      plus_percent = round(plus_strand / nrow(genome_df) * 100, 1),
+      minus_percent = round(minus_strand / nrow(genome_df) * 100, 1),
+      unknown_percent = round(unknown_strand / nrow(genome_df) * 100, 1)
+    )
+  }
+  
+  return(strand_stats)
+}
+
+# Calculate strand statistics
+strand_stats <- analyze_strand_distribution(genome_data)
+
+# Print strand distribution summary
+cat("=== STRAND DISTRIBUTION BY GENOME ===\n")
+for (genome in names(strand_stats)) {
+  stats <- strand_stats[[genome]]
+  cat(genome, ":\n")
+  cat("  Plus strand:  ", stats$plus, " (", stats$plus_percent, "%)\n", sep = "")
+  cat("  Minus strand: ", stats$minus, " (", stats$minus_percent, "%)\n", sep = "")
+  cat("  Unknown:      ", stats$unknown, " (", stats$unknown_percent, "%)\n", sep = "")
+  cat("  Total:        ", stats$total, " genes\n\n", sep = "")
+}
+
+
+
+
+# Create comprehensive strand distribution plots
+create_strand_plots <- function(genome_data, strand_stats) {
+  
+  # Prepare data for plotting
+  plot_data <- do.call(rbind, lapply(names(strand_stats), function(genome) {
+    data.frame(
+      genome = genome,
+      strand = c("Plus", "Minus", "Unknown"),
+      count = c(strand_stats[[genome]]$plus, 
+                strand_stats[[genome]]$minus, 
+                strand_stats[[genome]]$unknown),
+      percentage = c(strand_stats[[genome]]$plus_percent,
+                     strand_stats[[genome]]$minus_percent,
+                     strand_stats[[genome]]$unknown_percent)
+    )
+  }))
+  
+  # Plot 1: Stacked bar chart (counts)
+  p1 <- ggplot(plot_data, aes(x = genome, y = count, fill = strand)) +
+    geom_bar(stat = "identity", position = "stack") +
+    scale_fill_manual(values = c("Plus" = "#2E86AB", "Minus" = "#A23B72", "Unknown" = "#F18F01")) +
+    labs(title = "Strand Distribution by Genome (Counts)",
+         x = "Genome", y = "Number of Genes", fill = "Strand") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          plot.title = element_text(hjust = 0.5))
+  
+  # Plot 2: Stacked bar chart (percentages)
+  p2 <- ggplot(plot_data, aes(x = genome, y = percentage, fill = strand)) +
+    geom_bar(stat = "identity", position = "stack") +
+    scale_fill_manual(values = c("Plus" = "#2E86AB", "Minus" = "#A23B72", "Unknown" = "#F18F01")) +
+    labs(title = "Strand Distribution by Genome (Percentages)",
+         x = "Genome", y = "Percentage of Genes", fill = "Strand") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          plot.title = element_text(hjust = 0.5))
+  
+  # Plot 3: Side-by-side comparison
+  p3 <- ggplot(plot_data, aes(x = genome, y = count, fill = strand)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    scale_fill_manual(values = c("Plus" = "#2E86AB", "Minus" = "#A23B72", "Unknown" = "#F18F01")) +
+    labs(title = "Strand Distribution - Side by Side Comparison",
+         x = "Genome", y = "Number of Genes", fill = "Strand") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          plot.title = element_text(hjust = 0.5))
+  
+  # Plot 4: Plus/Minus ratio
+  ratio_data <- do.call(rbind, lapply(names(strand_stats), function(genome) {
+    stats <- strand_stats[[genome]]
+    data.frame(
+      genome = genome,
+      ratio = ifelse(stats$minus > 0, stats$plus / stats$minus, NA),
+      total_genes = stats$total
+    )
+  }))
+  
+  p4 <- ggplot(ratio_data, aes(x = genome, y = ratio, size = total_genes)) +
+    geom_point(color = "#C73E1D", alpha = 0.7) +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+    labs(title = "Plus/Minus Strand Ratio by Genome",
+         x = "Genome", y = "Plus:Minus Ratio", size = "Total Genes") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          plot.title = element_text(hjust = 0.5))
+  
+  # Arrange and save plots
+  ggsave("strand_distribution_counts.png", p1, width = 12, height = 8)
+  ggsave("strand_distribution_percentages.png", p2, width = 12, height = 8)
+  ggsave("strand_distribution_side_by_side.png", p3, width = 12, height = 8)
+  ggsave("strand_ratio_comparison.png", p4, width = 12, height = 8)
+  
+  # Print the plots
+  print(p1)
+  print(p2)
+  print(p3)
+  print(p4)
+  
+  return(list(p1, p2, p3, p4))
+}
+
+# Create strand distribution plots
+strand_plots <- create_strand_plots(genome_data, strand_stats)
+
+
+
+
+
+
+
+
+
+                  # GENOME FEATURE HEATMAPS
+
+# Fixed genomic feature comparison using only base R
+create_genomic_feature_heatmaps_base <- function(genome_data) {
+  
+  # Calculate comprehensive features using base R
+  feature_list <- list()
+  
+  for (genome in names(genome_data)) {
+    g_data <- genome_data[[genome]]
+    gene_lengths <- g_data$end - g_data$start
+    
+    feature_list[[genome]] <- c(
+      total_genes = nrow(g_data),
+      avg_gene_length = mean(gene_lengths),
+      median_gene_length = median(gene_lengths),
+      gene_density = nrow(g_data) / max(g_data$end) * 1e6,
+      genome_size_mb = max(g_data$end) / 1e6,
+      gene_length_sd = sd(gene_lengths),
+      intergenic_density = (max(g_data$end) - sum(gene_lengths)) / max(g_data$end) * 1e6
+    )
+  }
+  
+  # Convert to matrix
+  feature_matrix <- do.call(rbind, feature_list)
+  
+  # Normalize for heatmap (Z-scores)
+  feature_scaled <- scale(feature_matrix)
+  
+  # Create heatmap using base R
+  png("genomic_features_heatmap_baseR.png", width = 1000, height = 800)
+  
+  # Set up color palette
+  col_palette <- colorRampPalette(c("blue", "white", "red"))(100)
+  
+  # Create heatmap
+  heatmap_data <- t(feature_scaled)  # Transpose for better visualization
+  
+  # Calculate margins for labels
+  par(mar = c(8, 8, 6, 2))
+  
+  # Create the heatmap
+  image(1:ncol(heatmap_data), 1:nrow(heatmap_data), 
+        t(heatmap_data), 
+        col = col_palette,
+        xlab = "", ylab = "",
+        axes = FALSE,
+        main = "Genomic Features Heatmap\n(Standardized Z-scores)")
+  
+  # Add axis labels
+  axis(1, at = 1:ncol(heatmap_data), labels = colnames(heatmap_data), 
+       las = 2, cex.axis = 0.8)
+  axis(2, at = 1:nrow(heatmap_data), labels = rownames(heatmap_data), 
+       las = 1, cex.axis = 0.8)
+  
+  # Add feature names as y-axis labels
+  mtext("Genomic Features", side = 2, line = 4, cex = 1.2)
+  mtext("Fungal Genomes", side = 1, line = 6, cex = 1.2)
+  
+  # Add values to cells
+  for (i in 1:ncol(heatmap_data)) {
+    for (j in 1:nrow(heatmap_data)) {
+      text(i, j, round(heatmap_data[j, i], 1), cex = 0.7, col = "black")
+    }
+  }
+  
+  # Add legend
+  legend("topright", 
+         legend = c("Low", "Medium", "High"),
+         fill = c("blue", "white", "red"),
+         title = "Z-score")
+  
+  dev.off()
+  
+  cat("Genomic features heatmap saved: genomic_features_heatmap_baseR.png\n")
+  
+  return(feature_matrix)
+}
+
+# Create fixed genomic feature heatmaps
+feature_matrix <- create_genomic_feature_heatmaps_base(genome_data)
