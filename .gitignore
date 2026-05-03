@@ -1,0 +1,33 @@
+# R-specific files
+.Rhistory
+.Rapp.history
+.RData
+.Ruserdata
+*.Rproj
+*.Rproj.user/
+
+# IDE
+.Rproj.user
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# Data files (optional)
+*.csv
+*.xlsx
+*.xls
+
+# Output files
+*.html
+*.pdf
+
+# Dependencies
+renv/
