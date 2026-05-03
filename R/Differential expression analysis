@@ -1,1 +1,284 @@
+# These codes are corrected and suited for small data
+# However, it works same way for big data just requiring a few modifications
+# Use this raw code for your analysis (DES-seq)
+# The code structured for big data is in the bottom, starting line 200
 
+# ============================================
+# Differential Expression Analysis
+# Goal: Find genes responding to dexamethasone treatment
+# ============================================
+
+# Load libraries
+library(DESeq2)
+library(airway)
+library(ggplot2)
+library(dplyr)
+library(pheatmap)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+
+# Load data
+data(airway)
+counts <- assay(airway)
+metadata <- as.data.frame(colData(airway))
+
+# ============================================
+# Step 1: Create DESeq2 object and run analysis
+# ============================================
+
+# Create DESeq2 dataset
+# Design formula: model expression as ~ cell line + treatment
+dds <- DESeqDataSet(airway, design = ~ cell + dex)
+
+# Run the differential expression pipeline
+dds <- DESeq(dds)
+
+# Extract results (trt vs untrt)
+res <- results(dds, contrast = c("dex", "trt", "untrt"))
+
+# Order by adjusted p-value
+res <- res[order(res$padj), ]
+
+# ============================================
+# Step 2: Explore the results
+# ============================================
+
+# Summary of results
+summary(res)
+
+# How many significant genes?
+sig_genes <- res[!is.na(res$padj) & res$padj < 0.05 & abs(res$log2FoldChange) > 1, ]
+n_sig <- nrow(sig_genes)
+print(paste("Number of significant genes (|log2FC| > 1, padj < 0.05):", n_sig))
+
+# Top 10 most significant genes
+top10 <- head(res, 10)
+print("Top 10 most significant genes:")
+print(top10)
+
+# ============================================
+# Step 3: Visualization
+# ============================================
+
+# 3A: Volcano plot
+res_df <- as.data.frame(res)
+res_df$gene <- rownames(res_df)
+res_df$significant <- ifelse(!is.na(res_df$padj) & 
+                               res_df$padj < 0.05 & 
+                               abs(res_df$log2FoldChange) > 1, 
+                             "Significant", "Not Significant")
+
+volcano_plot <- ggplot(res_df, aes(x = log2FoldChange, 
+                                   y = -log10(padj), 
+                                   color = significant)) +
+  geom_point(alpha = 0.6, size = 1) +
+  scale_color_manual(values = c("Not Significant" = "gray", 
+                                "Significant" = "red")) +
+  theme_minimal() +
+  labs(title = "Differential Expression: Dexamethasone Treatment",
+       x = "log2 Fold Change (Treatment vs Control)",
+       y = "-log10(Adjusted P-value)") +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "blue") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "blue") +
+  theme(legend.position = "bottom")
+
+print(volcano_plot)
+
+# 3B: MA plot (log fold change vs mean expression)
+ma_plot <- ggplot(res_df, aes(x = baseMean, y = log2FoldChange, color = significant)) +
+  geom_point(alpha = 0.6, size = 1) +
+  scale_x_log10() +
+  scale_color_manual(values = c("Not Significant" = "gray", 
+                                "Significant" = "red")) +
+  theme_minimal() +
+  labs(title = "MA Plot",
+       x = "Mean of Normalized Counts (log scale)",
+       y = "log2 Fold Change") +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black") +
+  theme(legend.position = "bottom")
+
+print(ma_plot)
+
+# 3C: Heatmap of top 30 significant genes
+top30_genes <- rownames(head(sig_genes[order(sig_genes$log2FoldChange, decreasing = TRUE), ], 30))
+vst_counts <- assay(vst(dds))  # Variance stabilized counts
+
+heatmap_data <- vst_counts[top30_genes, ]
+annotation_col <- data.frame(
+  Treatment = metadata$dex,
+  CellLine = metadata$cell
+)
+rownames(annotation_col) <- colnames(vst_counts)
+
+pheatmap(heatmap_data,
+         scale = "row",
+         annotation_col = annotation_col,
+         show_rownames = TRUE,
+         main = "Top 30 Differentially Expressed Genes",
+         fontsize_row = 8,
+         clustering_distance_rows = "correlation",
+         color = colorRampPalette(c("blue", "white", "red"))(50))
+
+# ============================================
+# Step 4: Find most upregulated and downregulated genes
+# ============================================
+
+# Most upregulated (positive log2FC)
+upregulated <- sig_genes[order(sig_genes$log2FoldChange, decreasing = TRUE), ]
+top_up <- head(upregulated, 10)
+print("Top 10 upregulated genes:")
+print(top_up[, c("log2FoldChange", "padj")])
+
+# Most downregulated (negative log2FC)
+downregulated <- sig_genes[order(sig_genes$log2FoldChange, decreasing = FALSE), ]
+top_down <- head(downregulated, 10)
+print("Top 10 downregulated genes:")
+print(top_down[, c("log2FoldChange", "padj")])
+
+# ============================================
+# Step 5: Export results
+# ============================================
+
+# Save full results
+write.csv(as.data.frame(res), "DE_results_all_genes.csv")
+
+# Save only significant genes
+write.csv(as.data.frame(sig_genes), "DE_results_significant.csv")
+
+# Save top up/downregulated
+write.csv(as.data.frame(top_up), "top_10_upregulated.csv")
+write.csv(as.data.frame(top_down), "top_10_downregulated.csv")
+
+# ============================================
+# Step 6: Simple interpretation (without external DB)
+# ============================================
+
+# Look at a known dexamethasone-responsive gene: ZBTB16
+# (Zinc finger and BTB domain containing 16)
+if("ENSG00000109906" %in% rownames(res)) {
+  zbtb16_res <- res["ENSG00000109906", ]
+  print("Known dexamethasone target: ZBTB16")
+  print(paste("  log2 Fold Change:", round(zbtb16_res$log2FoldChange, 3)))
+  print(paste("  Adjusted P-value:", format(zbtb16_res$padj, scientific = TRUE)))
+}
+
+# ============================================
+# YOUR TASKS TO COMPLETE
+# ============================================
+
+print("=========================================")
+print( - Answers to be Answered
+print("=========================================")
+print("1. How many significant genes did you find?")
+print("2. What is the log2FC of the top upregulated gene?")
+print("3. Based on the MA plot, do most significant genes have")
+print("   high or low expression (baseMean)?")
+print("4. Save the volcano plot as 'volcano.png'")
+print("5. BONUS: Search Google for 'SPARCL1 gene function'")
+print("   - Is it upregulated or downregulated?")
+print("   - What biological process is it involved in?")
+print("=========================================")
+
+
+
+
+
+
+
+
+#In comparisson to first code, pay attention to some issues that could come up regarding; 1--Heatmaps with all genes/
+#2--PCA with all genes/ 3--Writing all results to CSV  >>>>> These parameters can easily crash your code.
+# Instead of adding ALL genes in heatmaps, use only top genes.
+# PCA usually can be slow on big datas, instead use (library(PCAtools)
+# pca_result <- pca(vst_counts, removeVar = 0.9)  # Removes 90% low-variance genes)>>> if suitable for yr data. 
+
+
+
+
+
+
+
+
+
+# ====================================================================================================================
+# BIG DATA VERSION - Handles 10,000+ samples
+# ====================================================================================================================
+
+library(DESeq2)
+library(data.table)  # Fast CSV
+library(PCAtools)    # Fast PCA
+library(Matrix)      # Sparse matrices
+
+# ====================================================================================================================
+# 1. Memory-efficient data loading
+# ====================================================================================================================
+
+# For huge datasets, don't load all at once
+# Use fread() instead of read.csv()
+counts_matrix <- fread("huge_counts.csv.gz")  # Reads compressed files
+counts_matrix <- as.matrix(counts_matrix, rownames = 1)  # Convert to matrix
+
+# ====================================================================================================================
+# 2. DESeq2 on big data (same code works!)
+# ====================================================================================================================
+
+dds <- DESeqDataSetFromMatrix(
+  countData = counts_matrix,
+  colData = metadata,
+  design = ~ condition
+)
+
+# This line handles big data internally
+dds <- DESeq(dds)  # Uses optimized C++ code
+
+# ====================================================================================================================
+# 3. Faster results extraction
+# ====================================================================================================================
+
+# Use 'tidy = TRUE' for data.table compatibility
+res <- results(dds, tidy = TRUE)  
+setDT(res)  # Convert to data.table for speed
+
+# Filter efficiently
+sig_genes <- res[padj < 0.05 & abs(log2FoldChange) > 1, ]
+
+# ====================================================================================================================
+# 4. Memory-efficient PCA
+# ====================================================================================================================
+
+vst_counts <- assay(vst(dds))
+
+# PCAtools is 10x faster than prcomp()
+pca_result <- pca(vst_counts, 
+                  removeVar = 0.8,  # Remove 80% low-variance genes
+                  scale = TRUE)
+
+# Plot (still works)
+biplot(pca_result)
+
+# ====================================================================================================================
+# 5. Fast visualization for big data
+# ====================================================================================================================
+
+# For 1000+ samples, use rasterized plots
+library(ggplot2)
+
+volcano_plot <- ggplot(res, aes(x = log2FoldChange, 
+                                 y = -log10(padj))) +
+  geom_point(alpha = 0.3, size = 0.5, raster = TRUE) +  # raster = TRUE saves memory
+  theme_minimal()
+
+# ====================================================================================================================
+# 6. Save results efficiently
+# ====================================================================================================================
+
+# Compressed CSV (10x smaller)
+fwrite(res, "DE_results.csv.gz")
+
+# Or Parquet (best for big data)
+library(arrow)
+write_parquet(res, "DE_results.parquet")
+
+# For sharing with non-R users, save as HDF5
+library(rhdf5)
+h5write(as.matrix(res), "DE_results.h5", "results")
