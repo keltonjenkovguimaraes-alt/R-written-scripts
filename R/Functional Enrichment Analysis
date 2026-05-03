@@ -72,7 +72,7 @@ entrez_down <- mapIds(EnsDb.Hsapiens.v86,
 entrez_down <- na.omit(entrez_down)
 
 # ============================================
-# Step 3: Identify Non-coding Genes
+# Identify Non-coding Genes 
 # ============================================
 
 # Get unmapped genes (non-coding candidates)
@@ -80,27 +80,39 @@ mapped_genes <- names(entrez_all[!is.na(entrez_all)])
 unmapped_genes <- setdiff(clean_ids, mapped_genes)
 print(paste("Total unmapped genes:", length(unmapped_genes)))
 
-# Get gene biotypes for unmapped genes
-gene_info <- select(EnsDb.Hsapiens.v86,
-                    keys = unmapped_genes,
-                    columns = c("GENEID", "GENENAME", "GENEBIOTYPE"),
-                    keytype = "GENEID")
+# Get gene biotypes for unmapped genes - CORRECTED for EnsDb
+library(EnsDb.Hsapiens.v86)
 
-# Define non-coding biotypes
+# Use mapIds for each column separately
+gene_names <- mapIds(EnsDb.Hsapiens.v86,
+                     keys = unmapped_genes,
+                     column = "GENENAME",
+                     keytype = "GENEID",
+                     multiVals = "first")
+
+gene_biotypes <- mapIds(EnsDb.Hsapiens.v86,
+                        keys = unmapped_genes,
+                        column = "GENEBIOTYPE",
+                        keytype = "GENEID",
+                        multiVals = "first")
+
+# Combine into data frame
+gene_info <- data.frame(
+  GENEID = unmapped_genes,
+  GENENAME = gene_names,
+  GENEBIOTYPE = gene_biotypes
+)
+
+# Remove rows with NA biotypes (if any)
+gene_info <- gene_info[!is.na(gene_info$GENEBIOTYPE), ]
+
+# View the biotypes
+print("Gene biotypes of unmapped genes:")
+print(table(gene_info$GENEBIOTYPE))
+
+# Define non-coding biotypes (excluding protein_coding)
 non_coding_ensembl <- gene_info$GENEID[gene_info$GENEBIOTYPE != "protein_coding"]
 print(paste("Non-coding genes identified:", length(non_coding_ensembl)))
-
-# Visualize biotype distribution
-biotype_counts <- as.data.frame(table(gene_info$GENEBIOTYPE))
-colnames(biotype_counts) <- c("Biotype", "Count")
-
-ggplot(biotype_counts, aes(x = reorder(Biotype, -Count), y = Count)) +
-  geom_bar(stat = "identity", fill = "steelblue") +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(title = "Biotypes of Unmapped Genes",
-       x = "Gene Biotype",
-       y = "Count")
 
 # ============================================
 # Step 4: GO Enrichment Analysis
